@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Argus — LLM-Driven Business KPI & Advisory Portal
+  Infrastructure: ECS Fargate (API + Worker), SQS, S3, DynamoDB, CloudWatch
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ──────────────────────────────────────────────────────────────────────────────
+Parameters:
+  AppEnv:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+
+  ImageUri:
+    Type: String
+    Description: ECR image URI for the API/Worker container (e.g. 123.dkr.ecr.us-east-1.amazonaws.com/argus:latest)
+
+  OpenAISecretArn:
+    Type: String
+    Description: ARN of the AWS Secrets Manager secret containing {"openai_api_key":"sk-..."}
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two subnets (in different AZs) for ECS tasks
+
+  CorsOrigins:
+    Type: String
+    Default: "https://main.YOUR_APP_ID.amplifyapp.com"
+    Description: Comma-separated list of allowed CORS origins (e.g. your Amplify app URL)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Resources
+# ──────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── S3 Bucket ───────────────────────────────────────────────────────────────
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "argus-uploads-${AWS::AccountId}-${AppEnv}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldUploads
+            Status: Enabled
+            ExpirationInDays: 365
+            Prefix: uploads/
+
+  # ── DynamoDB Table (single-table design) ────────────────────────────────────
+  ArgusTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "argus-${AppEnv}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: project_id
+          AttributeType: S
+        - AttributeName: entity_type
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: project_id-entity-index
+          KeySchema:
+            - AttributeName: project_id
+              KeyType: HASH
+            - AttributeName: entity_type
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  # ── SQS Queue (with dead-letter queue) ──────────────────────────────────────
+  JobsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "argus-jobs-dlq-${AppEnv}"
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "argus-jobs-${AppEnv}"
+      VisibilityTimeout: 900  # 15 minutes — must be >= task timeout
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsDLQ.Arn
+        maxReceiveCount: 3
+
+  # ── IAM Role for ECS tasks ───────────────────────────────────────────────────
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "argus-ecs-task-role-${AppEnv}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ArgusTaskPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObjectVersion
+                Resource: !Sub "${UploadsBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt UploadsBucket.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ArgusTable.Arn
+                  - !Sub "${ArgusTable.Arn}/index/*"
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt JobsQueue.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref OpenAISecretArn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "argus-ecs-exec-role-${AppEnv}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref OpenAISecretArn
+
+  # ── ECS Cluster ─────────────────────────────────────────────────────────────
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "argus-${AppEnv}"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  # ── CloudWatch Log Groups ───────────────────────────────────────────────────
+  APILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/argus-api-${AppEnv}"
+      RetentionInDays: 30
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/argus-worker-${AppEnv}"
+      RetentionInDays: 30
+
+  # ── ECS Task Definition — API ────────────────────────────────────────────────
+  APITaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "argus-api-${AppEnv}"
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ImageUri
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Command:
+            - uvicorn
+            - app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+          Environment:
+            - Name: APP_ENV
+              Value: !Ref AppEnv
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref ArgusTable
+            - Name: S3_BUCKET_NAME
+              Value: !Ref UploadsBucket
+            - Name: SQS_QUEUE_URL
+              Value: !Ref JobsQueue
+            - Name: CORS_ORIGINS
+              Value: !Ref CorsOrigins
+          Secrets:
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "${OpenAISecretArn}:openai_api_key::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref APILogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          HealthCheck:
+            Command: [CMD-SHELL, "curl -f http://localhost:8000/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+
+  # ── ECS Task Definition — Worker ─────────────────────────────────────────────
+  WorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "argus-worker-${AppEnv}"
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: worker
+          Image: !Ref ImageUri
+          Command:
+            - python
+            - -m
+            - app.worker.main
+          Environment:
+            - Name: APP_ENV
+              Value: !Ref AppEnv
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref ArgusTable
+            - Name: S3_BUCKET_NAME
+              Value: !Ref UploadsBucket
+            - Name: SQS_QUEUE_URL
+              Value: !Ref JobsQueue
+          Secrets:
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "${OpenAISecretArn}:openai_api_key::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+
+  # ── Security Group ──────────────────────────────────────────────────────────
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Argus ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: "0.0.0.0/0"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+
+  # ── ECS Service — API ────────────────────────────────────────────────────────
+  APIService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "argus-api-${AppEnv}"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref APITaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          AssignPublicIp: ENABLED
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+
+  # ── ECS Service — Worker ─────────────────────────────────────────────────────
+  WorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "argus-worker-${AppEnv}"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref WorkerTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          AssignPublicIp: ENABLED
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ──────────────────────────────────────────────────────────────────────────────
+Outputs:
+  BucketName:
+    Value: !Ref UploadsBucket
+    Description: S3 bucket for uploads and report artifacts
+
+  TableName:
+    Value: !Ref ArgusTable
+    Description: DynamoDB table name
+
+  QueueUrl:
+    Value: !Ref JobsQueue
+    Description: SQS queue URL for background jobs
+
+  ClusterName:
+    Value: !Ref ECSCluster
+    Description: ECS cluster name
