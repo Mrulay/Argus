@@ -13,17 +13,22 @@ from app.models import (
     ColumnProfile,
     DatasetProfile,
     Forecast,
+    KPI,
     KPIProposal,
     RiskSignal,
     ComplianceNote,
     Recommendation,
     KPIFilter,
     KPIPlan,
+    DashboardSpec,
+    DashboardWidget,
+    DashboardWidgetType,
 )
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_OPERATORS = {"eq", "ne", "gt", "lt", "gte", "lte", "in"}
+_ALLOWED_WIDGETS = {w.value for w in DashboardWidgetType}
 
 
 def _client() -> OpenAI:
@@ -93,6 +98,7 @@ Each KPI object must have these fields:
 Filters must use ONLY these operators: [eq, ne, gt, lt, gte, lte, in].
 Never use aggregation words (e.g., COUNT, SUM) as filter operators.
 If you include a ratio metric, you MUST supply both numerator_column and denominator_column.
+For mix/segment KPIs (e.g., sales mix by category), include a group_by column so the breakdown can be stored.
 Only reference columns that exist in the schema."""
     user = (
         f"Business description: {business_description}\n\n"
@@ -191,6 +197,81 @@ Return a JSON object with these keys:
     forecasts = [Forecast(**f) for f in data.get("forecasts", [])]
     recommendations = [Recommendation(**r) for r in data.get("recommendations", [])]
     return bm_summary, risks, compliance, forecasts, recommendations
+
+
+# ---------------------------------------------------------------------------
+# Dashboard spec generation
+# ---------------------------------------------------------------------------
+
+def generate_dashboard_spec(
+    project_id: str,
+    business_description: str,
+    profile: DatasetProfile,
+    kpis: list[KPI],
+) -> DashboardSpec | None:
+    kpi_summary = "\n".join(
+        f"- {k.kpi_id}: {k.name} = {k.value} {k.unit or ''}" for k in kpis
+    )
+    schema_summary = _schema_summary(profile)
+    system = """You are a data visualization designer.
+Return a JSON object with key "dashboard" containing:
+  title (string), summary (string or null), widgets (list)
+Each widget:
+  type: one of [kpi_card, bar, line, area, pie, table]
+  title: string
+  description: string or null
+    size: one of [sm, md, lg, xl]
+    section: string or null (used to group widgets into sections)
+    value_key: "value" or "pct" (optional; choose how to plot breakdowns)
+  kpi_ids: list of KPI IDs to visualize
+Use only KPI IDs provided. Do not invent IDs."""
+    user = (
+        f"Business description: {business_description}\n\n"
+        f"KPI list (id: name = value unit):\n{kpi_summary}\n\n"
+        f"Dataset schema:\n{schema_summary}"
+    )
+    data = _chat(system, user)
+    dashboard = data.get("dashboard", {})
+    widgets_data = dashboard.get("widgets", [])
+
+    valid_kpi_ids = {k.kpi_id for k in kpis}
+    widgets: list[DashboardWidget] = []
+    for item in widgets_data:
+        widget_type = item.get("type")
+        size = item.get("size", "md")
+        section = item.get("section")
+        value_key = item.get("value_key")
+        kpi_ids = [k for k in item.get("kpi_ids", []) if k in valid_kpi_ids]
+        if size not in {"sm", "md", "lg", "xl"}:
+            size = "md"
+        if widget_type not in _ALLOWED_WIDGETS or not kpi_ids:
+            logger.warning("Dashboard widget discarded type=%s kpi_ids=%s", widget_type, kpi_ids)
+            continue
+        if value_key not in {None, "value", "pct"}:
+            value_key = None
+
+        widgets.append(
+            DashboardWidget(
+                type=DashboardWidgetType(widget_type),
+                title=item.get("title", "Untitled"),
+                description=item.get("description"),
+                kpi_ids=kpi_ids,
+                size=size,
+                section=section,
+                value_key=value_key,
+            )
+        )
+
+    if not widgets:
+        logger.warning("Dashboard spec invalid: no widgets")
+        return None
+
+    return DashboardSpec(
+        project_id=project_id,
+        title=dashboard.get("title", "KPI Dashboard"),
+        summary=dashboard.get("summary"),
+        widgets=widgets,
+    )
 
 
 # ---------------------------------------------------------------------------

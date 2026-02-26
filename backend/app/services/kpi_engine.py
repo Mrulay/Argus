@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from app.models import KPI, KPIFilter, KPIPlan
+from app.models import KPI, KPIBreakdownEntry, KPIFilter, KPIPlan
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,36 @@ def get_group_label(df: pd.DataFrame, plan: KPIPlan) -> Optional[str]:
     return _group_key_to_label(series.idxmax())
 
 
+def build_breakdown(df: pd.DataFrame, plan: KPIPlan) -> Optional[list[KPIBreakdownEntry]]:
+    df = _apply_time_window(df, plan)
+    df = _apply_filters(df, plan.filters)
+    if df.empty:
+        return None
+
+    values = _grouped_metric_values(df, plan)
+    if values is None or values.empty:
+        return None
+
+    series = pd.to_numeric(values, errors="coerce").dropna()
+    if series.empty:
+        return None
+
+    total = series.sum()
+    breakdown: list[KPIBreakdownEntry] = []
+    for key, val in series.sort_values(ascending=False).items():
+        pct = None
+        if total and total != 0:
+            pct = float(val / total * 100)
+        breakdown.append(
+            KPIBreakdownEntry(
+                label=_group_key_to_label(key),
+                value=float(val),
+                pct=pct,
+            )
+        )
+    return breakdown
+
+
 def execute_plan(df: pd.DataFrame, plan: KPIPlan) -> Optional[float]:
     """Execute a KPIPlan against a DataFrame and return a scalar result."""
     df = _apply_time_window(df, plan)
@@ -245,8 +275,13 @@ def compute_kpis(df: pd.DataFrame, kpis: list[KPI]) -> list[KPI]:
 
     updated = []
     for kpi in kpis:
+        breakdown = None
         try:
             value = execute_plan(df, kpi.plan)
+            if kpi.plan.group_by:
+                breakdown = build_breakdown(df, kpi.plan)
+                if breakdown and kpi.plan.metric in {"sum", "count"}:
+                    value = sum(b.value for b in breakdown)
         except Exception as exc:
             logger.error("KPI %s computation error: %s", kpi.kpi_id, exc)
             value = None
@@ -254,6 +289,7 @@ def compute_kpis(df: pd.DataFrame, kpis: list[KPI]) -> list[KPI]:
             kpi.model_copy(
                 update={
                     "value": value,
+                    "value_breakdown": breakdown,
                     "computed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )

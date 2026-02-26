@@ -19,6 +19,7 @@ from app.models import (
     JobStatus,
     KPI,
     KPIStatus,
+    DashboardSpec,
 )
 from app.services import database as db, queue as q, storage
 from app.services import llm, profiler as prof
@@ -147,8 +148,24 @@ def _handle_compute_kpis(job: Job, msg: JobMessage) -> None:
             logger.info("KPI computed value name=%s id=%s value=%s", kpi.name, kpi.kpi_id, kpi.value)
         db.update_item("kpi", kpi.kpi_id, {
             "value": kpi.value,
+            "value_breakdown": [b.model_dump() for b in kpi.value_breakdown] if kpi.value_breakdown else None,
             "computed_at": kpi.computed_at,
         })
+
+    profile = prof.profile_dataframe(df)
+    project = db.get_item("project", msg.project_id)
+    business_description = project.get("business_description", "") if project else ""
+    dashboard_spec = llm.generate_dashboard_spec(
+        project_id=msg.project_id,
+        business_description=business_description,
+        profile=profile,
+        kpis=computed,
+    )
+    if dashboard_spec:
+        db.put_entity("dashboard", dashboard_spec.dashboard_id, msg.project_id, dashboard_spec.model_dump())
+        logger.info("Dashboard spec stored project=%s dashboard_id=%s", msg.project_id, dashboard_spec.dashboard_id)
+    else:
+        logger.warning("Dashboard spec generation failed project=%s", msg.project_id)
 
     db.update_item("job", job.job_id, {
         "status": JobStatus.running.value,

@@ -86,6 +86,7 @@ export interface KPI {
   status: KPIStatus;
   value?: number | null;
   value_label?: string | null;
+  value_breakdown?: { label: string; value: number; pct?: number | null }[] | null;
   computed_at?: string | null;
   created_at: string;
 }
@@ -146,6 +147,28 @@ export interface AdvisoryReport {
   recommendations: Recommendation[];
   created_at: string;
   s3_key: string;
+}
+
+export type DashboardWidgetType = 'kpi_card' | 'bar' | 'line' | 'area' | 'pie' | 'table';
+
+export interface DashboardWidget {
+  widget_id: string;
+  type: DashboardWidgetType;
+  title: string;
+  description?: string | null;
+  kpi_ids: string[];
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  section?: string | null;
+  value_key?: 'value' | 'pct' | null;
+}
+
+export interface DashboardSpec {
+  dashboard_id: string;
+  project_id: string;
+  title: string;
+  summary?: string | null;
+  widgets: DashboardWidget[];
+  created_at: string;
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -213,6 +236,11 @@ export const getJob = (projectId: string, jobId: string) =>
 
 export const listJobs = (projectId: string) =>
   request<Job[]>(`/projects/${projectId}/jobs/`);
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+
+export const getLatestDashboard = (projectId: string) =>
+  request<DashboardSpec>(`/projects/${projectId}/dashboard/latest`);
 
 // ── Reports ──────────────────────────────────────────────────────────────────
 

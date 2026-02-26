@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import datasets, jobs, kpis, projects, reports
+from app.routers import dashboard, datasets, jobs, kpis, projects, reports
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("argus.api")
@@ -33,6 +33,7 @@ app.include_router(datasets.router)
 app.include_router(kpis.router)
 app.include_router(jobs.router)
 app.include_router(reports.router)
+app.include_router(dashboard.router)
 
 
 @app.on_event("startup")

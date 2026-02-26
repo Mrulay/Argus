@@ -124,6 +124,12 @@ class KPIProposal(BaseModel):
     unit: Optional[str] = None
 
 
+class KPIBreakdownEntry(BaseModel):
+    label: str
+    value: float
+    pct: Optional[float] = None
+
+
 class KPI(BaseModel):
     kpi_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     project_id: str
@@ -137,6 +143,7 @@ class KPI(BaseModel):
     status: KPIStatus = KPIStatus.proposed
     value: Optional[float] = None
     value_label: Optional[str] = None
+    value_breakdown: Optional[list[KPIBreakdownEntry]] = None
     computed_at: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -210,3 +217,36 @@ class AdvisoryReport(BaseModel):
 
 class RecommendationApprovalRequest(BaseModel):
     approvals: dict[int, bool]  # index -> approved
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Spec
+# ---------------------------------------------------------------------------
+
+class DashboardWidgetType(str, Enum):
+    kpi_card = "kpi_card"
+    bar = "bar"
+    line = "line"
+    area = "area"
+    pie = "pie"
+    table = "table"
+
+
+class DashboardWidget(BaseModel):
+    widget_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: DashboardWidgetType
+    title: str
+    description: Optional[str] = None
+    kpi_ids: list[str] = []
+    size: str = "md"  # sm, md, lg, xl
+    section: Optional[str] = None
+    value_key: Optional[str] = None  # value or pct
+
+
+class DashboardSpec(BaseModel):
+    dashboard_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    project_id: str
+    title: str
+    summary: Optional[str] = None
+    widgets: list[DashboardWidget]
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

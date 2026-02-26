@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import math
 from typing import Any, Optional
 
 import boto3
@@ -27,6 +28,7 @@ _PFX = {
     "kpi": "KPI",
     "job": "JOB",
     "report": "REPORT",
+    "dashboard": "DASHBOARD",
 }
 
 
@@ -35,6 +37,8 @@ def _pk(entity: str, entity_id: str) -> str:
 
 
 def _to_dynamodb(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if isinstance(value, float):
         return Decimal(str(value))
     if isinstance(value, list):

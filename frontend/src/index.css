@@ -319,6 +319,107 @@ input:focus, textarea:focus, select:focus {
 
 .panel-card li { margin-bottom: 6px; }
 
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.dashboard-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.dashboard-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.4px;
+}
+
+.section-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.35), transparent);
+}
+
+.widget-card h3 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.widget-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.widget-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.widget-card:hover::after {
+  opacity: 1;
+}
+
+.chart-loading::before {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.2) 0%, rgba(226, 232, 240, 0.6) 50%, rgba(226, 232, 240, 0.2) 100%);
+  animation: shimmer 1.6s infinite;
+  pointer-events: none;
+}
+
+.chart-loading > * {
+  opacity: 0.7;
+}
+
+.widget-sm { grid-column: span 3; }
+.widget-md { grid-column: span 4; }
+.widget-lg { grid-column: span 6; }
+.widget-xl { grid-column: span 12; }
+
+@media (max-width: 1200px) {
+  .widget-sm { grid-column: span 4; }
+  .widget-md { grid-column: span 6; }
+  .widget-lg { grid-column: span 12; }
+}
+
+@media (max-width: 820px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .widget-sm,
+  .widget-md,
+  .widget-lg,
+  .widget-xl { grid-column: span 6; }
+}
+
+.kpi-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; padding: 10px 12px; color: #6b7280; font-weight: 600; border-bottom: 2px solid #e5e7eb; }
 td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; }
@@ -331,6 +432,11 @@ tr:last-child td { border-bottom: none; }
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-20%); }
+  100% { transform: translateX(20%); }
 }
 
 @media (max-width: 980px) {

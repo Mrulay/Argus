@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from app.models import KPI, KPIFilter, KPIPlan, KPIStatus
-from app.services.kpi_engine import execute_plan, compute_kpis, get_group_label
+from app.services.kpi_engine import execute_plan, compute_kpis, get_group_label, build_breakdown
 
 
 def _sales_df() -> pd.DataFrame:
@@ -109,6 +109,14 @@ class TestExecutePlan:
         label = get_group_label(df, plan)
         assert label in {"A", "B"}
 
+    def test_group_by_breakdown(self):
+        df = _sales_df()
+        plan = KPIPlan(metric="sum", column="revenue", group_by=["category"])
+        breakdown = build_breakdown(df, plan)
+        assert breakdown is not None
+        labels = {b.label for b in breakdown}
+        assert labels == {"A", "B"}
+
     def test_empty_dataframe_returns_none(self):
         df = pd.DataFrame({"revenue": []})
         plan = KPIPlan(metric="sum", column="revenue")
@@ -141,6 +149,20 @@ class TestComputeKPIs:
         assert len(results) == 1
         assert results[0].value == pytest.approx(2225.0)
         assert results[0].computed_at is not None
+
+    def test_compute_kpis_breakdown(self):
+        df = _sales_df()
+        kpi = KPI(
+            project_id="proj-1",
+            name="Revenue Mix",
+            description="Revenue by category",
+            rationale="Mix",
+            formula="SUM(revenue) by category",
+            plan=KPIPlan(metric="sum", column="revenue", group_by=["category"]),
+            status=KPIStatus.approved,
+        )
+        results = compute_kpis(df, [kpi])
+        assert results[0].value_breakdown is not None
 
     def test_compute_kpis_multiple(self):
         df = _sales_df()
