@@ -136,6 +136,7 @@ class KPI(BaseModel):
     unit: Optional[str] = None
     status: KPIStatus = KPIStatus.proposed
     value: Optional[float] = None
+    value_label: Optional[str] = None
     computed_at: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 

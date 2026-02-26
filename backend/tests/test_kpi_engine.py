@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from app.models import KPI, KPIFilter, KPIPlan, KPIStatus
-from app.services.kpi_engine import execute_plan, compute_kpis
+from app.services.kpi_engine import execute_plan, compute_kpis, get_group_label
 
 
 def _sales_df() -> pd.DataFrame:
@@ -51,6 +51,13 @@ class TestExecutePlan:
         # total cost = 1109, total revenue = 2225
         assert result == pytest.approx(1109 / 2225, rel=1e-3)
 
+    def test_ratio_count_distinct_denominator(self):
+        df = _sales_df()
+        plan = KPIPlan(metric="ratio", numerator_column="revenue", denominator_column="order_id")
+        result = execute_plan(df, plan)
+        # denominator falls back to count distinct order_id
+        assert result == pytest.approx(2225 / 10, rel=1e-3)
+
     def test_growth_rate(self):
         df = pd.DataFrame({
             "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
@@ -95,6 +102,12 @@ class TestExecutePlan:
         df = _sales_df()
         plan = KPIPlan(metric="sum", column="nonexistent")
         assert execute_plan(df, plan) is None
+
+    def test_group_by_top_label(self):
+        df = _sales_df()
+        plan = KPIPlan(metric="sum", column="revenue", group_by=["category"])
+        label = get_group_label(df, plan)
+        assert label in {"A", "B"}
 
     def test_empty_dataframe_returns_none(self):
         df = pd.DataFrame({"revenue": []})

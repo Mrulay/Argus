@@ -85,6 +85,7 @@ export interface KPI {
   unit?: string | null;
   status: KPIStatus;
   value?: number | null;
+  value_label?: string | null;
   computed_at?: string | null;
   created_at: string;
 }
@@ -155,12 +156,26 @@ export const createProject = (body: { name: string; business_description: string
 export const getProject = (projectId: string) =>
   request<Project>(`/projects/${projectId}`);
 
+export const listProjects = () =>
+  request<Project[]>('/projects/');
+
 // ── Datasets ─────────────────────────────────────────────────────────────────
 
 export const uploadDataset = async (projectId: string, file: File): Promise<Dataset> => {
   const form = new FormData();
   form.append('file', file);
   const res = await fetch(`${BASE}/projects/${projectId}/datasets/`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+  return res.json();
+};
+
+export const uploadDatasets = async (projectId: string, files: File[]): Promise<Dataset[]> => {
+  const form = new FormData();
+  files.forEach(file => form.append('files', file));
+  const res = await fetch(`${BASE}/projects/${projectId}/datasets/batch`, {
     method: 'POST',
     body: form,
   });

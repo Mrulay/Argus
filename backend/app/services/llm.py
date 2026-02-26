@@ -23,6 +23,8 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_OPERATORS = {"eq", "ne", "gt", "lt", "gte", "lte", "in"}
+
 
 def _client() -> OpenAI:
     return OpenAI(api_key=get_settings().openai_api_key)
@@ -83,46 +85,75 @@ Each KPI object must have these fields:
     column: string or null,
     numerator_column: string or null,
     denominator_column: string or null,
-    filters: [] (list of {column, operator, value}),
+        filters: [] (list of {column, operator, value}),
     group_by: [] (list of column names),
     time_column: string or null,
     time_window_days: integer or null
   }
+Filters must use ONLY these operators: [eq, ne, gt, lt, gte, lte, in].
+Never use aggregation words (e.g., COUNT, SUM) as filter operators.
+If you include a ratio metric, you MUST supply both numerator_column and denominator_column.
 Only reference columns that exist in the schema."""
     user = (
         f"Business description: {business_description}\n\n"
         f"Business model summary: {business_model_summary}\n\n"
         f"Dataset schema:\n{schema_summary}"
     )
-    data = _chat(system, user)
-    proposals = []
-    for item in data.get("kpis", []):
-        plan_data = item.get("plan", {})
-        filters = [
-            KPIFilter(**f) for f in plan_data.get("filters", [])
-        ]
-        plan = KPIPlan(
-            metric=plan_data.get("metric", "count"),
-            column=plan_data.get("column"),
-            numerator_column=plan_data.get("numerator_column"),
-            denominator_column=plan_data.get("denominator_column"),
-            filters=filters,
-            group_by=plan_data.get("group_by", []),
-            time_column=plan_data.get("time_column"),
-            time_window_days=plan_data.get("time_window_days"),
-        )
-        proposals.append(
-            KPIProposal(
-                name=item["name"],
-                description=item["description"],
-                rationale=item["rationale"],
-                formula=item["formula"],
-                plan=plan,
-                target=item.get("target"),
-                unit=item.get("unit"),
+    attempts = 2
+    last_invalid = 0
+    for attempt in range(1, attempts + 1):
+        data = _chat(system, user)
+        proposals: list[KPIProposal] = []
+        invalid_count = 0
+        for item in data.get("kpis", []):
+            plan_data = item.get("plan", {})
+            filters = [
+                KPIFilter(**f) for f in plan_data.get("filters", [])
+            ]
+            invalid_ops = [f.operator for f in filters if f.operator not in _ALLOWED_OPERATORS]
+            metric = plan_data.get("metric", "count")
+            num_col = plan_data.get("numerator_column")
+            den_col = plan_data.get("denominator_column")
+            invalid_ratio = metric == "ratio" and (not num_col or not den_col)
+            if invalid_ops or invalid_ratio:
+                invalid_count += 1
+                logger.warning(
+                    "Invalid KPI plan discarded name=%s invalid_ops=%s invalid_ratio=%s",
+                    item.get("name"),
+                    invalid_ops,
+                    invalid_ratio,
+                )
+                continue
+            plan = KPIPlan(
+                metric=metric,
+                column=plan_data.get("column"),
+                numerator_column=num_col,
+                denominator_column=den_col,
+                filters=filters,
+                group_by=plan_data.get("group_by", []),
+                time_column=plan_data.get("time_column"),
+                time_window_days=plan_data.get("time_window_days"),
             )
-        )
-    return proposals
+            proposals.append(
+                KPIProposal(
+                    name=item["name"],
+                    description=item["description"],
+                    rationale=item["rationale"],
+                    formula=item["formula"],
+                    plan=plan,
+                    target=item.get("target"),
+                    unit=item.get("unit"),
+                )
+            )
+
+        if invalid_count == 0 or attempt == attempts:
+            return proposals
+
+        last_invalid = invalid_count
+        logger.warning("Retrying KPI proposal generation invalid_count=%s attempt=%s", invalid_count, attempt)
+
+    logger.warning("KPI proposal retries exhausted invalid_count=%s", last_invalid)
+    return []
 
 
 # ---------------------------------------------------------------------------

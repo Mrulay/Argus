@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import pandas as pd
+
 from app.models import (
     AdvisoryReport,
     Job,
@@ -42,19 +44,47 @@ signal.signal(signal.SIGINT, _signal_handler)
 # Stage handlers
 # ---------------------------------------------------------------------------
 
+def _select_datasets(datasets: list[dict[str, Any]], dataset_id: str | None) -> list[dict[str, Any]]:
+    if dataset_id:
+        selected = [d for d in datasets if d.get("dataset_id") == dataset_id]
+        return selected or datasets[:1]
+    return datasets
+
+
+def _load_combined_dataframe(datasets: list[dict[str, Any]]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for dataset in datasets:
+        data = storage.download_file(dataset["s3_key"])
+        frames.append(load_dataframe(data, dataset["filename"]))
+    if not frames:
+        raise ValueError("No datasets found for project")
+    return pd.concat(frames, ignore_index=True, sort=False)
+
 def _handle_profile(job: Job, msg: JobMessage) -> None:
     """Profile dataset and then immediately generate KPI proposals."""
     datasets = db.query_by_project("dataset", msg.project_id)
     if not datasets:
         raise ValueError("No datasets found for project")
-    dataset = datasets[0] if not msg.dataset_id else next(
-        (d for d in datasets if d["dataset_id"] == msg.dataset_id), datasets[0]
+    selected = _select_datasets(datasets, msg.dataset_id)
+
+    logger.info(
+        "Profiling project=%s datasets=%s",
+        msg.project_id,
+        [d.get("dataset_id") for d in selected],
     )
 
-    data = storage.download_file(dataset["s3_key"])
-    profile = prof.profile_bytes(data, dataset["filename"])
+    combined_df = _load_combined_dataframe(selected)
+    profile = prof.profile_dataframe(combined_df)
 
-    db.update_item("dataset", dataset["dataset_id"], {"profile": profile.model_dump()})
+    logger.info(
+        "Profile complete project=%s rows=%s cols=%s",
+        msg.project_id,
+        profile.row_count,
+        profile.column_count,
+    )
+
+    for dataset in selected:
+        db.update_item("dataset", dataset["dataset_id"], {"profile": profile.model_dump()})
 
     project = db.get_item("project", msg.project_id)
     business_description = project.get("business_description", "") if project else ""
@@ -98,12 +128,23 @@ def _handle_compute_kpis(job: Job, msg: JobMessage) -> None:
     datasets = db.query_by_project("dataset", msg.project_id)
     if not datasets:
         raise ValueError("No datasets found for project")
-    dataset = datasets[0]
-    data = storage.download_file(dataset["s3_key"])
-    df = load_dataframe(data, dataset["filename"])
+    selected = _select_datasets(datasets, msg.dataset_id)
+    df = _load_combined_dataframe(selected)
+
+    logger.info(
+        "Computing KPIs project=%s kpis=%s rows=%s cols=%s",
+        msg.project_id,
+        len(approved_kpis),
+        len(df),
+        len(df.columns),
+    )
 
     computed = compute_kpis(df, approved_kpis)
     for kpi in computed:
+        if kpi.value is None:
+            logger.warning("KPI computed null name=%s id=%s", kpi.name, kpi.kpi_id)
+        else:
+            logger.info("KPI computed value name=%s id=%s value=%s", kpi.name, kpi.kpi_id, kpi.value)
         db.update_item("kpi", kpi.kpi_id, {
             "value": kpi.value,
             "computed_at": kpi.computed_at,
@@ -138,12 +179,25 @@ def _handle_generate_report(job: Job, msg: JobMessage) -> None:
         for k in computed_kpis
     ]
 
+    logger.info(
+        "Generating report project=%s computed_kpis=%s",
+        msg.project_id,
+        len(kpi_results),
+    )
+
     datasets = db.query_by_project("dataset", msg.project_id)
     if not datasets:
         raise ValueError("No datasets found for project")
-    dataset = datasets[0]
-    data = storage.download_file(dataset["s3_key"])
-    profile = prof.profile_bytes(data, dataset["filename"])
+    selected = _select_datasets(datasets, msg.dataset_id)
+    combined_df = _load_combined_dataframe(selected)
+    profile = prof.profile_dataframe(combined_df)
+
+    logger.info(
+        "Report profile project=%s rows=%s cols=%s",
+        msg.project_id,
+        profile.row_count,
+        profile.column_count,
+    )
 
     project = db.get_item("project", msg.project_id)
     business_description = project.get("business_description", "") if project else ""
@@ -170,6 +224,8 @@ def _handle_generate_report(job: Job, msg: JobMessage) -> None:
     report = report.model_copy(update={"s3_key": s3_key})
 
     db.put_entity("report", report.report_id, msg.project_id, report.model_dump())
+
+    logger.info("Report stored project=%s report_id=%s", msg.project_id, report.report_id)
 
     db.update_item("job", job.job_id, {
         "status": JobStatus.complete.value,

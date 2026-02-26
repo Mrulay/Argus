@@ -18,6 +18,11 @@ function KPICard({ kpi }: { kpi: KPI }) {
           ? `${Number(kpi.value!.toFixed(2)).toLocaleString()}${kpi.unit ? ` ${kpi.unit}` : ''}`
           : '—'}
       </div>
+        {kpi.value_label && (
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+            Top group: {kpi.value_label}
+          </div>
+        )}
       {pct != null && (
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>

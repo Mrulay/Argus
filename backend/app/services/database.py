@@ -1,7 +1,7 @@
 """DynamoDB service — single-table design."""
 from __future__ import annotations
 
-import json
+from decimal import Decimal
 from typing import Any, Optional
 
 import boto3
@@ -34,13 +34,23 @@ def _pk(entity: str, entity_id: str) -> str:
     return f"{_PFX[entity]}#{entity_id}"
 
 
+def _to_dynamodb(value: Any) -> Any:
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_to_dynamodb(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_dynamodb(v) for k, v in value.items()}
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Generic helpers
 # ---------------------------------------------------------------------------
 
 def put_item(entity: str, entity_id: str, data: dict[str, Any]) -> None:
     table = _get_table()
-    item = {"PK": _pk(entity, entity_id), "SK": _pk(entity, entity_id), **data}
+    item = {"PK": _pk(entity, entity_id), "SK": _pk(entity, entity_id), **_to_dynamodb(data)}
     table.put_item(Item=item)
 
 
@@ -52,6 +62,7 @@ def get_item(entity: str, entity_id: str) -> Optional[dict[str, Any]]:
 
 def update_item(entity: str, entity_id: str, updates: dict[str, Any]) -> None:
     table = _get_table()
+    updates = _to_dynamodb(updates)
     set_exprs = [f"#{k} = :{k}" for k in updates]
     expr_names = {f"#{k}": k for k in updates}
     expr_values = {f":{k}": v for k, v in updates.items()}
@@ -80,6 +91,6 @@ def put_entity(entity: str, entity_id: str, project_id: str, data: dict[str, Any
         "SK": _pk(entity, entity_id),
         "project_id": project_id,
         "entity_type": entity,
-        **data,
+        **_to_dynamodb(data),
     }
     table.put_item(Item=item)

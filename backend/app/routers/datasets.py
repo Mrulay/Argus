@@ -2,14 +2,31 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from app.models import Dataset, DatasetProfile
 from app.services import database as db, storage
 
 router = APIRouter(prefix="/projects/{project_id}/datasets", tags=["datasets"])
+
+
+async def _store_dataset(project_id: str, file: UploadFile) -> Dataset:
+    data = await file.read()
+    dataset_id = str(uuid.uuid4())
+    filename = file.filename or "upload"
+    s3_key = f"uploads/{project_id}/{dataset_id}/{filename}"
+
+    storage.upload_file(s3_key, data, file.content_type or "application/octet-stream")
+
+    dataset = Dataset(
+        dataset_id=dataset_id,
+        project_id=project_id,
+        filename=filename,
+        s3_key=s3_key,
+    )
+    db.put_entity("dataset", dataset_id, project_id, dataset.model_dump())
+    return dataset
 
 
 @router.post("/", response_model=Dataset, status_code=201)
@@ -21,20 +38,24 @@ async def upload_dataset(
     if not db.get_item("project", project_id):
         raise HTTPException(status_code=404, detail="Project not found")
 
-    data = await file.read()
-    dataset_id = str(uuid.uuid4())
-    s3_key = f"uploads/{project_id}/{dataset_id}/{file.filename}"
+    return await _store_dataset(project_id, file)
 
-    storage.upload_file(s3_key, data, file.content_type or "application/octet-stream")
 
-    dataset = Dataset(
-        dataset_id=dataset_id,
-        project_id=project_id,
-        filename=file.filename or "upload",
-        s3_key=s3_key,
-    )
-    db.put_entity("dataset", dataset_id, project_id, dataset.model_dump())
-    return dataset
+@router.post("/batch", response_model=list[Dataset], status_code=201)
+async def upload_datasets(
+    project_id: str,
+    files: list[UploadFile] = File(...),
+) -> list[Dataset]:
+    # Validate project exists
+    if not db.get_item("project", project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    datasets: list[Dataset] = []
+    for file in files:
+        datasets.append(await _store_dataset(project_id, file))
+    return datasets
 
 
 @router.get("/{dataset_id}", response_model=Dataset)

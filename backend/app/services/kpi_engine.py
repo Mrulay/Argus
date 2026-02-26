@@ -65,13 +65,106 @@ def _scalar(val: Any) -> Optional[float]:
         return None
 
 
+def _mean_date_diff_days(df: pd.DataFrame, start_col: str, end_col: str) -> Optional[float]:
+    if start_col not in df.columns or end_col not in df.columns:
+        return None
+    try:
+        tmp = df.copy()
+        tmp[start_col] = pd.to_datetime(tmp[start_col], errors="coerce")
+        tmp[end_col] = pd.to_datetime(tmp[end_col], errors="coerce")
+        diffs = (tmp[end_col] - tmp[start_col]).dt.total_seconds() / 86400.0
+        diffs = diffs.dropna()
+        if diffs.empty:
+            return None
+        return _scalar(diffs.mean())
+    except Exception as exc:
+        logger.warning("mean date diff computation failed: %s", exc)
+        return None
+
+
+def _numeric_or_count_distinct(series: pd.Series) -> Optional[float]:
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().any():
+        return _scalar(numeric.sum())
+    return _scalar(series.nunique())
+
+
+def _group_key_to_label(key: Any) -> str:
+    if isinstance(key, tuple):
+        return " / ".join(str(part) for part in key)
+    return str(key)
+
+
+def _grouped_metric_values(df: pd.DataFrame, plan: KPIPlan) -> Optional[pd.Series]:
+    group_cols = [c for c in plan.group_by if c in df.columns]
+    if not group_cols:
+        return None
+
+    metric = plan.metric
+    grouped = df.groupby(group_cols, dropna=False)
+
+    if metric == "count":
+        return grouped.size().astype(float)
+
+    if metric == "count_distinct":
+        if not plan.column or plan.column not in df.columns:
+            return None
+        return grouped[plan.column].nunique().astype(float)
+
+    if metric == "sum":
+        if not plan.column or plan.column not in df.columns:
+            return None
+        return grouped[plan.column].apply(lambda s: pd.to_numeric(s, errors="coerce").sum())
+
+    if metric == "mean":
+        if plan.column and plan.column in df.columns:
+            return grouped[plan.column].apply(lambda s: pd.to_numeric(s, errors="coerce").mean())
+        if plan.numerator_column and plan.denominator_column:
+            return grouped.apply(
+                lambda g: _mean_date_diff_days(g, plan.denominator_column, plan.numerator_column)
+            )
+        return None
+
+    if metric in {"ratio", "growth_rate", "mean_days_between"}:
+        plan_no_group = plan.model_copy(update={"group_by": []})
+        return grouped.apply(lambda g: execute_plan(g, plan_no_group))
+
+    return None
+
+
+def _grouped_aggregate(df: pd.DataFrame, plan: KPIPlan) -> Optional[float]:
+    values = _grouped_metric_values(df, plan)
+    if values is None or values.empty:
+        return None
+    series = pd.to_numeric(values, errors="coerce").dropna()
+    if series.empty:
+        return None
+    return _scalar(series.max())
+
+
+def get_group_label(df: pd.DataFrame, plan: KPIPlan) -> Optional[str]:
+    values = _grouped_metric_values(df, plan)
+    if values is None or values.empty:
+        return None
+    series = pd.to_numeric(values, errors="coerce").dropna()
+    if series.empty:
+        return None
+    return _group_key_to_label(series.idxmax())
+
+
 def execute_plan(df: pd.DataFrame, plan: KPIPlan) -> Optional[float]:
     """Execute a KPIPlan against a DataFrame and return a scalar result."""
     df = _apply_time_window(df, plan)
     df = _apply_filters(df, plan.filters)
 
     if df.empty:
+        logger.warning("Plan returned empty dataframe metric=%s", plan.metric)
         return None
+
+    if plan.group_by:
+        grouped_value = _grouped_aggregate(df, plan)
+        if grouped_value is not None:
+            return grouped_value
 
     metric = plan.metric
 
@@ -80,31 +173,45 @@ def execute_plan(df: pd.DataFrame, plan: KPIPlan) -> Optional[float]:
 
     if metric == "count_distinct":
         if not plan.column or plan.column not in df.columns:
+            logger.warning("count_distinct missing column=%s", plan.column)
             return None
         return float(df[plan.column].nunique())
 
     if metric == "sum":
         if not plan.column or plan.column not in df.columns:
+            logger.warning("sum missing column=%s", plan.column)
             return None
         return _scalar(pd.to_numeric(df[plan.column], errors="coerce").sum())
 
     if metric == "mean":
-        if not plan.column or plan.column not in df.columns:
-            return None
-        return _scalar(pd.to_numeric(df[plan.column], errors="coerce").mean())
+        if plan.column and plan.column in df.columns:
+            return _scalar(pd.to_numeric(df[plan.column], errors="coerce").mean())
+        if plan.numerator_column and plan.denominator_column:
+            return _mean_date_diff_days(df, plan.denominator_column, plan.numerator_column)
+        logger.warning("mean missing column or date diff inputs")
+        return None
 
     if metric == "ratio":
         num_col = plan.numerator_column
         den_col = plan.denominator_column
         if not num_col or not den_col:
+            logger.warning("ratio missing numerator or denominator")
             return None
         if num_col not in df.columns or den_col not in df.columns:
+            logger.warning("ratio missing columns numerator=%s denominator=%s", num_col, den_col)
             return None
-        num = pd.to_numeric(df[num_col], errors="coerce").sum()
-        den = pd.to_numeric(df[den_col], errors="coerce").sum()
+        num = _numeric_or_count_distinct(df[num_col])
+        den = _numeric_or_count_distinct(df[den_col])
         if den == 0:
+            logger.warning("ratio zero denominator")
             return None
         return _scalar(num / den)
+
+    if metric == "mean_days_between":
+        if not plan.numerator_column or not plan.denominator_column:
+            logger.warning("mean_days_between missing columns")
+            return None
+        return _mean_date_diff_days(df, plan.denominator_column, plan.numerator_column)
 
     if metric == "growth_rate":
         if not plan.column or plan.column not in df.columns:

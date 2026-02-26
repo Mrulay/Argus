@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+import pandas as pd
 
 from app.models import KPI, KPIApprovalRequest, KPIStatus, JobMessage, JobStage, Job, JobStatus
-from app.services import database as db, queue as q
+from app.services import database as db, queue as q, storage
+from app.services.kpi_engine import get_group_label
+from app.services.profiler import load_dataframe
 
 router = APIRouter(prefix="/projects/{project_id}/kpis", tags=["kpis"])
 
@@ -12,7 +15,32 @@ router = APIRouter(prefix="/projects/{project_id}/kpis", tags=["kpis"])
 @router.get("/", response_model=list[KPI])
 def list_kpis(project_id: str) -> list[KPI]:
     items = db.query_by_project("kpi", project_id)
-    return [KPI(**item) for item in items]
+    kpis = [KPI(**item) for item in items]
+
+    needs_labels = any(kpi.plan.group_by for kpi in kpis)
+    if not needs_labels:
+        return kpis
+
+    datasets = db.query_by_project("dataset", project_id)
+    if not datasets:
+        return kpis
+
+    frames: list[pd.DataFrame] = []
+    for dataset in datasets:
+        data = storage.download_file(dataset["s3_key"])
+        frames.append(load_dataframe(data, dataset["filename"]))
+    if not frames:
+        return kpis
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    updated: list[KPI] = []
+    for kpi in kpis:
+        if kpi.plan.group_by:
+            label = get_group_label(df, kpi.plan)
+            updated.append(kpi.model_copy(update={"value_label": label}))
+        else:
+            updated.append(kpi)
+    return updated
 
 
 @router.get("/{kpi_id}", response_model=KPI)
