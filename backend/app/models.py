@@ -152,6 +152,10 @@ class KPIApprovalRequest(BaseModel):
     approvals: dict[str, KPIStatus]  # kpi_id -> approved/rejected
 
 
+class CustomKPIRequest(BaseModel):
+    request: str
+
+
 # ---------------------------------------------------------------------------
 # Job
 # ---------------------------------------------------------------------------

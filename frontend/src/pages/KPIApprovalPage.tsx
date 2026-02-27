@@ -1,26 +1,48 @@
 import { useEffect, useState } from 'react';
-import { listKPIs, approveKPIs, type KPI, type KPIStatus } from '../api/client';
+import { listKPIs, approveKPIs, createCustomKPI, type KPI, type KPIStatus } from '../api/client';
 
 export default function KPIApprovalPage() {
   const projectId = localStorage.getItem('argus_project_id') ?? '';
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [approvals, setApprovals] = useState<Record<string, KPIStatus>>({});
   const [loading, setLoading] = useState(true);
+  const [polling, setPolling] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [customRequest, setCustomRequest] = useState('');
+  const [customError, setCustomError] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
-    listKPIs(projectId)
-      .then(data => {
-        setKpis(data);
-        const initial: Record<string, KPIStatus> = {};
-        data.forEach(k => { initial[k.kpi_id] = k.status; });
-        setApprovals(initial);
-      })
-      .catch(err => setError(String(err)))
-      .finally(() => setLoading(false));
+    let interval: number | undefined;
+
+    const fetchKpis = () => {
+      listKPIs(projectId)
+        .then(data => {
+          setKpis(data);
+          const initial: Record<string, KPIStatus> = {};
+          data.forEach(k => { initial[k.kpi_id] = k.status; });
+          setApprovals(initial);
+          if (data.length > 0) {
+            setPolling(false);
+            if (interval) window.clearInterval(interval);
+          } else {
+            setPolling(true);
+          }
+        })
+        .catch(err => setError(String(err)))
+        .finally(() => setLoading(false));
+    };
+
+    fetchKpis();
+    interval = window.setInterval(fetchKpis, 2000);
+
+    return () => {
+      if (interval) window.clearInterval(interval);
+    };
   }, [projectId]);
 
   async function handleSubmit() {
@@ -39,12 +61,39 @@ export default function KPIApprovalPage() {
     }
   }
 
+  async function handleAddCustomKPI() {
+    if (!customRequest.trim()) {
+      setCustomError('Please enter a KPI request.');
+      return;
+    }
+    setAdding(true);
+    setCustomError('');
+    try {
+      const kpi = await createCustomKPI(projectId, customRequest.trim());
+      setKpis(prev => [...prev, kpi]);
+      setApprovals(prev => ({ ...prev, [kpi.kpi_id]: kpi.status }));
+      setCustomRequest('');
+      setModalOpen(false);
+    } catch (err: unknown) {
+      setCustomError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdding(false);
+    }
+  }
+
   function setStatus(kpiId: string, status: KPIStatus) {
     setApprovals(prev => ({ ...prev, [kpiId]: status }));
   }
 
   if (!projectId) return <div className="error-msg">No active project. Please upload data first.</div>;
-  if (loading) return <div className="spinner">Loading KPI proposals…</div>;
+  if (loading) {
+    return (
+      <div className="loading-state">
+        <div className="loading-orbit" />
+        <div className="loading-text">Loading KPI proposals…</div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -60,13 +109,16 @@ export default function KPIApprovalPage() {
       {success && <div className="info-msg" style={{ marginBottom: 16 }}>{success}</div>}
 
       {kpis.length === 0 ? (
-        <div className="info-msg">
-          No KPI proposals yet. Please wait for the profiling job to complete.
+        <div className="loading-state">
+          <div className="loading-orbit" />
+          <div className="loading-text">
+            {polling ? 'Waiting for KPI recommendations…' : 'No KPI proposals yet.'}
+          </div>
         </div>
       ) : (
         <>
           {kpis.map(kpi => (
-            <div className="card" key={kpi.kpi_id}>
+            <div className="card fade-in" key={kpi.kpi_id}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1 }}>
                   <h3 style={{ margin: '0 0 6px', fontSize: 16 }}>{kpi.name}</h3>
@@ -110,7 +162,39 @@ export default function KPIApprovalPage() {
           >
             {saving ? 'Saving…' : 'Save Approvals & Compute KPIs'}
           </button>
+
+          <button
+            className="btn-ghost"
+            onClick={() => setModalOpen(true)}
+            style={{ marginTop: 12 }}
+          >
+            + Add KPI
+          </button>
         </>
+      )}
+
+      {modalOpen && (
+        <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Add a custom KPI</h2>
+            <p className="muted">Describe the KPI you want in plain language.</p>
+            <textarea
+              rows={4}
+              placeholder="e.g., Revenue share by product category for the last 30 days"
+              value={customRequest}
+              onChange={e => setCustomRequest(e.target.value)}
+            />
+            {customError && <div className="error-msg" style={{ marginTop: 12 }}>{customError}</div>}
+            <div className="form-actions" style={{ marginTop: 16 }}>
+              <button className="btn-secondary" onClick={() => setModalOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn-primary" onClick={handleAddCustomKPI} disabled={adding}>
+                {adding ? 'Adding…' : 'Add KPI'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

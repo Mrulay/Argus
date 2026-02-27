@@ -223,6 +223,12 @@ export const approveKPIs = (projectId: string, approvals: Record<string, KPIStat
     body: JSON.stringify({ approvals }),
   });
 
+export const createCustomKPI = (projectId: string, requestText: string) =>
+  request<KPI>(`/projects/${projectId}/kpis/custom`, {
+    method: 'POST',
+    body: JSON.stringify({ request: requestText }),
+  });
+
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
 export const createJob = (projectId: string, stage: JobStage, datasetId?: string) => {

@@ -60,6 +60,14 @@ export default function UploadPage() {
           Create a project, upload your CSV or Excel files, and let Argus profile the data and
           propose KPIs. Once the project is ready, enter the portal to review approvals and reports.
         </p>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => navigate('/dashboard')}
+          style={{ marginTop: 16 }}
+        >
+          Go to Portal
+        </button>
       </header>
 
       <div className="onboarding-grid">
@@ -111,7 +119,7 @@ export default function UploadPage() {
                 <button
                   type="button"
                   className="btn-secondary"
-                  onClick={() => navigate('/dashboard')}
+                  onClick={() => navigate('/kpis')}
                 >
                   Enter Portal
                 </button>

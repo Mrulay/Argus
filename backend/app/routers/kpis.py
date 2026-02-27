@@ -4,8 +4,18 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 import pandas as pd
 
-from app.models import KPI, KPIApprovalRequest, KPIStatus, JobMessage, JobStage, Job, JobStatus
-from app.services import database as db, queue as q, storage
+from app.models import (
+    KPI,
+    KPIApprovalRequest,
+    KPIStatus,
+    JobMessage,
+    JobStage,
+    Job,
+    JobStatus,
+    CustomKPIRequest,
+    DatasetProfile,
+)
+from app.services import database as db, queue as q, storage, llm
 from app.services.kpi_engine import get_group_label
 from app.services.profiler import load_dataframe
 
@@ -78,3 +88,41 @@ def approve_kpis(project_id: str, body: KPIApprovalRequest) -> list[KPI]:
         q.enqueue_job(msg)
 
     return updated
+
+
+@router.post("/custom", response_model=KPI, status_code=201)
+def create_custom_kpi(project_id: str, body: CustomKPIRequest) -> KPI:
+    project = db.get_item("project", project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    datasets = db.query_by_project("dataset", project_id)
+    if not datasets:
+        raise HTTPException(status_code=409, detail="No datasets found for project")
+
+    profiled = next((d for d in datasets if d.get("profile")), None)
+    if not profiled:
+        raise HTTPException(status_code=409, detail="Dataset profile not ready")
+
+    profile = profiled["profile"]
+    viable, reason, proposal = llm.generate_custom_kpi(
+        user_request=body.request,
+        business_description=project.get("business_description", ""),
+        profile=DatasetProfile(**profile),
+    )
+    if not viable or not proposal:
+        raise HTTPException(status_code=422, detail=reason or "Invalid KPI request")
+
+    kpi = KPI(
+        project_id=project_id,
+        name=proposal.name,
+        description=proposal.description,
+        rationale=proposal.rationale,
+        formula=proposal.formula,
+        plan=proposal.plan,
+        target=proposal.target,
+        unit=proposal.unit,
+        status=KPIStatus.proposed,
+    )
+    db.put_entity("kpi", kpi.kpi_id, project_id, kpi.model_dump())
+    return kpi

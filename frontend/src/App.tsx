@@ -32,7 +32,7 @@ function ProjectSelector() {
       localStorage.setItem('argus_project_id', value);
       localStorage.removeItem('argus_dataset_id');
       localStorage.removeItem('argus_dataset_ids');
-      navigate('/dashboard');
+      navigate('/kpis');
     }
   }
 
@@ -81,7 +81,7 @@ function Sidebar() {
 
       <nav className="sidebar-nav">
         <NavLink to="/kpis" className={({ isActive }) => isActive ? 'active' : ''}>
-          KPI Approval
+          Recommended KPIs
         </NavLink>
         <NavLink to="/dashboard" className={({ isActive }) => isActive ? 'active' : ''}>
           Dashboard

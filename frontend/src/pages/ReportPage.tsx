@@ -9,20 +9,40 @@ export default function ReportPage() {
   const [approvals, setApprovals] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [polling, setPolling] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
-    getLatestReport(projectId)
-      .then(data => {
-        setReport(data);
-        const init: Record<number, boolean> = {};
-        data.recommendations.forEach((r, i) => { if (r.approved != null) init[i] = r.approved; });
-        setApprovals(init);
-      })
-      .catch(err => setError(String(err)))
-      .finally(() => setLoading(false));
+    let interval: number | undefined;
+
+    const fetchReport = () => {
+      getLatestReport(projectId)
+        .then(data => {
+          setReport(data);
+          const init: Record<number, boolean> = {};
+          data.recommendations.forEach((r, i) => { if (r.approved != null) init[i] = r.approved; });
+          setApprovals(init);
+          setPolling(false);
+          if (interval) window.clearInterval(interval);
+        })
+        .catch(err => {
+          const message = String(err);
+          setError(message);
+          if (message.includes('No report') || message.includes('404')) {
+            setPolling(true);
+          }
+        })
+        .finally(() => setLoading(false));
+    };
+
+    fetchReport();
+    interval = window.setInterval(fetchReport, 2000);
+
+    return () => {
+      if (interval) window.clearInterval(interval);
+    };
   }, [projectId]);
 
   async function handleApproveRecommendations() {
@@ -40,16 +60,27 @@ export default function ReportPage() {
   }
 
   if (!projectId) return <div className="error-msg">No active project. Please upload data first.</div>;
-  if (loading) return <div className="spinner">Loading advisory report…</div>;
+  if (loading) {
+    return (
+      <div className="loading-state">
+        <div className="loading-orbit" />
+        <div className="loading-text">Loading advisory report…</div>
+      </div>
+    );
+  }
 
   if (error && !report) {
     return (
       <div>
         <div className="page-header"><h1>Advisory Report</h1></div>
-        <div className="error-msg">{error}</div>
-        <p style={{ color: '#6b7280', marginTop: 12 }}>
-          The report may still be generating. Please refresh after the compute job completes.
-        </p>
+        {polling ? (
+          <div className="loading-state">
+            <div className="loading-orbit" />
+            <div className="loading-text">Report is generating. Checking again…</div>
+          </div>
+        ) : (
+          <div className="error-msg">{error}</div>
+        )}
       </div>
     );
   }

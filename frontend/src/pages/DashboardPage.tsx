@@ -67,25 +67,58 @@ export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [dashboard, setDashboard] = useState<DashboardSpec | null>(null);
   const [loading, setLoading] = useState(true);
+  const [polling, setPolling] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
-    Promise.all([listKPIs(projectId), listJobs(projectId), getLatestDashboard(projectId)])
-      .then(([k, j, d]) => { setKpis(k); setJobs(j); setDashboard(d); })
-      .catch(err => {
-        if (String(err).includes('dashboard')) {
-          setDashboard(null);
-        } else {
-          setError(String(err));
-        }
-      })
-      .catch(err => setError(String(err)))
-      .finally(() => setLoading(false));
+    let interval: number | undefined;
+    let settleTimeout: number | undefined;
+
+    const fetchAll = () => {
+      Promise.all([listKPIs(projectId), listJobs(projectId), getLatestDashboard(projectId)])
+        .then(([k, j, d]) => {
+          setPolling(false);
+          if (interval) window.clearInterval(interval);
+          if (settleTimeout) window.clearTimeout(settleTimeout);
+
+          // Delay final render slightly to allow KPI writes to settle.
+          settleTimeout = window.setTimeout(() => {
+            setKpis(k);
+            setJobs(j);
+            setDashboard(d);
+          }, 2000);
+        })
+        .catch(err => {
+          const message = String(err);
+          if (message.includes('dashboard')) {
+            setDashboard(null);
+            setPolling(true);
+          } else {
+            setError(message);
+          }
+        })
+        .finally(() => setLoading(false));
+    };
+
+    fetchAll();
+    interval = window.setInterval(fetchAll, 2000);
+
+    return () => {
+      if (interval) window.clearInterval(interval);
+      if (settleTimeout) window.clearTimeout(settleTimeout);
+    };
   }, [projectId]);
 
   if (!projectId) return <div className="error-msg">No active project. Please upload data first.</div>;
-  if (loading) return <div className="spinner">Loading dashboard…</div>;
+  if (loading) {
+    return (
+      <div className="loading-state">
+        <div className="loading-orbit" />
+        <div className="loading-text">Loading dashboard…</div>
+      </div>
+    );
+  }
 
   const approved = kpis.filter(k => k.status === 'approved');
   const computed = approved.filter(k => k.value != null);
@@ -262,21 +295,16 @@ export default function DashboardPage() {
 
       {error && <div className="error-msg" style={{ marginBottom: 16 }}>{error}</div>}
 
-      {latestJob && (
-        <div className="card" style={{ padding: '14px 20px' }}>
-          <span style={{ fontSize: 13, color: '#6b7280' }}>Latest job: </span>
-          <strong style={{ fontSize: 13 }}>{latestJob.stage}</strong>
-          <span style={{ marginLeft: 10 }}>
-            <span className={`badge badge-${latestJob.status}`}>{latestJob.status}</span>
-          </span>
-          {latestJob.error && (
-            <span style={{ marginLeft: 10, fontSize: 12, color: '#ef4444' }}>{latestJob.error}</span>
-          )}
-        </div>
-      )}
 
       {approved.length === 0 ? (
-        <div className="info-msg">No approved KPIs yet. Please complete the approval step.</div>
+        polling ? (
+          <div className="loading-state">
+            <div className="loading-orbit" />
+            <div className="loading-text">Waiting for KPI computations…</div>
+          </div>
+        ) : (
+          <div className="info-msg">No approved KPIs yet. Please complete the approval step.</div>
+        )
       ) : (
         hasCustomDashboard ? (
           <div className="dashboard-sections">
