@@ -130,7 +130,15 @@ export default function DashboardPage() {
 
   const latestJob = jobs.sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 
-  function buildWidgetData(widget: DashboardWidget) {
+  type WidgetRow = {
+    name: string;
+    value: number;
+    unit?: string | null;
+    target?: number;
+    pct?: number;
+  };
+
+  function buildWidgetData(widget: DashboardWidget): WidgetRow[] {
     const items = widget.kpi_ids
       .map(id => kpis.find(k => k.kpi_id === id))
       .filter((k): k is KPI => Boolean(k));
@@ -149,7 +157,7 @@ export default function DashboardPage() {
     }));
   }
 
-  function resolveValueKey(widget: DashboardWidget, data: Array<{ pct?: number }>) {
+  function resolveValueKey(widget: DashboardWidget, data: WidgetRow[]) {
     if (widget.value_key === 'value' || widget.value_key === 'pct') return widget.value_key;
     return data.every(row => row.pct != null) ? 'pct' : 'value';
   }
@@ -188,7 +196,7 @@ export default function DashboardPage() {
               {data.map((row, idx) => (
                 <tr key={idx}>
                   <td>{row.name}</td>
-                  <td>{row.value.toLocaleString()} {row.unit}</td>
+                  <td>{row.value.toLocaleString()} {row.unit ?? ''}</td>
                   {hasPct && <td>{row.pct != null ? `${row.pct}%` : '—'}</td>}
                 </tr>
               ))}
