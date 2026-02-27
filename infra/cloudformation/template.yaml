@@ -29,8 +29,12 @@ Parameters:
 
   CorsOrigins:
     Type: String
-    Default: "https://main.YOUR_APP_ID.amplifyapp.com"
-    Description: Comma-separated list of allowed CORS origins (e.g. your Amplify app URL)
+    Default: '["https://argus.mrulay.dev"]'
+    Description: JSON array of allowed CORS origins (e.g. ["https://app.example.com"])
+
+  AcmCertificateArn:
+    Type: String
+    Description: ACM certificate ARN for the API domain (must be in us-east-1)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Resources
@@ -308,6 +312,24 @@ Resources:
               awslogs-stream-prefix: worker
 
   # ── Security Group ──────────────────────────────────────────────────────────
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Argus ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -317,10 +339,55 @@ Resources:
         - IpProtocol: tcp
           FromPort: 8000
           ToPort: 8000
-          CidrIp: "0.0.0.0/0"
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: "0.0.0.0/0"
+
+  # ── Application Load Balancer ──────────────────────────────────────────────
+  APILoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  APITargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Port: 8000
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  APILoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref APILoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
+
+  APILoadBalancerHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref APILoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref AcmCertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
 
   # ── ECS Service — API ────────────────────────────────────────────────────────
   APIService:
@@ -340,6 +407,12 @@ Resources:
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
         MaximumPercent: 200
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref APITargetGroup
+    DependsOn:
+      - APILoadBalancerListener
 
   # ── ECS Service — Worker ─────────────────────────────────────────────────────
   WorkerService:
@@ -376,3 +449,7 @@ Outputs:
   ClusterName:
     Value: !Ref ECSCluster
     Description: ECS cluster name
+
+  ApiLoadBalancerDns:
+    Value: !GetAtt APILoadBalancer.DNSName
+    Description: Public DNS for the API load balancer
